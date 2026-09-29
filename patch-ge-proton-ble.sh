@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
         --ble-repo) BLE_REPO="$2"; shift 2 ;;
         --ble-ref) BLE_REF="$2"; shift 2 ;;
         --restore) RESTORE=1; shift ;;
-        -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
         -*) die "unknown option $1" ;;
         *) GE="$(realpath "$1")"; shift ;;
     esac
