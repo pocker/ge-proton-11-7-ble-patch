@@ -41,6 +41,14 @@ Connecting a device takes roughly 15–30 seconds.
 
 `git`, `curl`, `python3`, `perl`, `autoconf`, `make`, `gcc`, `flex`, `bison`, `pkg-config`, mingw-w64 (x86_64 and i686), and the D-Bus development headers.
 
+The easiest way is to let the script install them. With `--install-deps` it uses `sudo pacman` on Arch-based systems or `sudo apt-get` on Debian-based ones, asks for your password, and shows what it will install before doing it:
+
+```sh
+./patch-ge-proton-ble.sh --install-deps ~/.local/share/Steam/compatibilitytools.d/GE-Proton11-7-x86_64
+```
+
+Without `--install-deps`, the script stops and prints the command for anything that's missing. To install them yourself instead:
+
 Arch/CachyOS:
 
 ```sh

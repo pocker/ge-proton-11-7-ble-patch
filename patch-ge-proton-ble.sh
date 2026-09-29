@@ -19,6 +19,7 @@
 #   --ble-repo URL Source of the BLE code (default: https://github.com/pocker/wine.git).
 #   --ble-ref REF  Branch or tag in --ble-repo (default: zwift-radios).
 #   --restore      Put back the original GE-Proton files saved by a previous run.
+#   --install-deps Install missing build tools with sudo (pacman or apt only).
 #
 # Then, for each game that needs Bluetooth, set PROTON_ENABLE_WINEBTH=1 in its
 # environment and pin the runner to this exact GE-Proton version.
@@ -34,6 +35,7 @@ BLE_REPO="https://github.com/pocker/wine.git"
 BLE_REF="zwift-radios"
 PREFIXES=()
 RESTORE=0
+INSTALL_DEPS=0
 GE=""
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -46,6 +48,7 @@ while [ $# -gt 0 ]; do
         --ble-repo) BLE_REPO="$2"; shift 2 ;;
         --ble-ref) BLE_REF="$2"; shift 2 ;;
         --restore) RESTORE=1; shift ;;
+        --install-deps) INSTALL_DEPS=1; shift ;;
         -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
         -*) die "unknown option $1" ;;
         *) GE="$(realpath "$1")"; shift ;;
@@ -84,10 +87,47 @@ if [ "$RESTORE" = 1 ]; then
     exit 0
 fi
 
-for t in git curl python3 perl autoreconf make gcc flex bison pkg-config x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc; do
-    command -v "$t" >/dev/null || die "missing build dependency: $t"
-done
-pkg-config --exists dbus-1 || die "missing dbus-1 development headers"
+REQUIRED_TOOLS=(git curl python3 perl autoreconf make gcc flex bison pkg-config x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc)
+PACMAN_PKGS=(git curl python perl autoconf make gcc flex bison pkgconf mingw-w64-gcc dbus)
+APT_PKGS=(git curl python3 perl autoconf make gcc flex bison pkg-config gcc-mingw-w64 libdbus-1-dev)
+
+missing_deps() {
+    local t
+    for t in "${REQUIRED_TOOLS[@]}"; do command -v "$t" >/dev/null || echo "$t"; done
+    if command -v pkg-config >/dev/null && ! pkg-config --exists dbus-1; then echo "dbus-1-headers"; fi
+    return 0
+}
+
+install_hint() {
+    if command -v pacman >/dev/null; then echo "sudo pacman -S --needed ${PACMAN_PKGS[*]}"
+    elif command -v apt-get >/dev/null; then echo "sudo apt-get update && sudo apt-get install ${APT_PKGS[*]}"
+    fi
+}
+
+install_deps() {
+    if command -v pacman >/dev/null; then sudo pacman -S --needed "${PACMAN_PKGS[@]}"
+    elif command -v apt-get >/dev/null; then sudo apt-get update && sudo apt-get install "${APT_PKGS[@]}"
+    else die "--install-deps only knows pacman (Arch-based) and apt (Debian-based); install the missing tools yourself"
+    fi
+}
+
+MISSING="$(missing_deps | tr '\n' ' ')"
+if [ -n "$MISSING" ]; then
+    if [ "$INSTALL_DEPS" = 1 ]; then
+        log "Installing missing build dependencies: $MISSING"
+        install_deps
+        MISSING="$(missing_deps | tr '\n' ' ')"
+        [ -z "$MISSING" ] || die "still missing after install: $MISSING"
+    else
+        echo "error: missing build dependencies: $MISSING" >&2
+        HINT="$(install_hint)"
+        if [ -n "$HINT" ]; then
+            echo "install them with:  $HINT" >&2
+            echo "or re-run this script with --install-deps" >&2
+        fi
+        exit 1
+    fi
+fi
 
 TAG="$(awk '{print $2}' "$GE/version")"
 log "GE-Proton version: $TAG"
