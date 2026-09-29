@@ -23,7 +23,7 @@
 # Then, for each game that needs Bluetooth, set PROTON_ENABLE_WINEBTH=1 in its
 # environment and pin the runner to this exact GE-Proton version.
 #
-# Only verified with GE-Proton11-7. Requirements: git, curl, python3, autoconf, make,
+# Only verified with GE-Proton11-7. Requirements: git, curl, python3, perl, autoconf, make,
 # gcc, flex, bison, mingw-w64 (x86_64 + i686), dbus development headers, BlueZ.
 
 set -euo pipefail
@@ -84,7 +84,7 @@ if [ "$RESTORE" = 1 ]; then
     exit 0
 fi
 
-for t in git curl python3 autoreconf make gcc flex bison pkg-config x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc; do
+for t in git curl python3 perl autoreconf make gcc flex bison pkg-config x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc; do
     command -v "$t" >/dev/null || die "missing build dependency: $t"
 done
 pkg-config --exists dbus-1 || die "missing dbus-1 development headers"

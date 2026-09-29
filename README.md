@@ -31,18 +31,26 @@ The script fixes both.
 | Rouvy | The underlying BLE code was written for Rouvy, but hasn't been tested with this script |
 | Lutris (via umu) | Tested |
 | Steam | Should work with the launch option below; untested |
-| Linux | Needs BlueZ running, a Bluetooth adapter that supports BLE, and a normal desktop session (system D-Bus access). Tested on CachyOS with KDE. |
+| Linux | Needs BlueZ running, a Bluetooth adapter that supports BLE, and a normal desktop session (system D-Bus access). |
+| Arch-based (CachyOS, KDE) | Tested |
+| Debian/Ubuntu | Should work, untested. Flatpak Steam keeps GE-Proton under `~/.var/app/com.valvesoftware.Steam/`, and `umu-run` (only used by `--prefix`) may not be packaged. |
 
 Connecting a device takes roughly 15–30 seconds.
 
 ## Requirements to build
 
-`git`, `curl`, `python3`, `autoconf`, `make`, `gcc`, `flex`, `bison`, `pkg-config`, mingw-w64 (x86_64 and i686), and the D-Bus development headers.
+`git`, `curl`, `python3`, `perl`, `autoconf`, `make`, `gcc`, `flex`, `bison`, `pkg-config`, mingw-w64 (x86_64 and i686), and the D-Bus development headers.
 
 Arch/CachyOS:
 
 ```sh
-sudo pacman -S --needed git curl python autoconf make gcc flex bison pkgconf mingw-w64-gcc dbus
+sudo pacman -S --needed git curl python perl autoconf make gcc flex bison pkgconf mingw-w64-gcc dbus
+```
+
+Debian/Ubuntu:
+
+```sh
+sudo apt install git curl python3 perl autoconf make gcc flex bison pkg-config gcc-mingw-w64 libdbus-1-dev
 ```
 
 The build takes a few minutes and uses about 1 GB in `~/.cache/ge-proton-ble`.
