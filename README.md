@@ -112,3 +112,7 @@ This puts the original GE-Proton files back. Prefixes you updated with `--prefix
 - [evanjt/wine](https://github.com/evanjt/wine): BLE support in `winebth.sys` and `windows.devices.bluetooth`, made for Rouvy
 - [pocker/wine](https://github.com/pocker/wine) `zwift-radios`: radio listing, `BluetoothUuidHelper`, `DataReader`/`DataWriter`, GATT session handling and faster reconnects, needed for Zwift
 - [GloriousEggroll/proton-ge-custom](https://github.com/GloriousEggroll/proton-ge-custom)
+
+## License
+
+The script and this README are MIT licensed (see `LICENSE`). The wine code it downloads and builds stays under Wine's LGPL-2.1-or-later.
