@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Add Bluetooth LE support (for Zwift, Rouvy, etc.) to a GE-Proton install.
 #
-# Builds winebth.sys, bluetoothapis, windows.devices.bluetooth, windows.devices.radios
-# and wintypes from the exact wine source that GE-Proton pins, with the BLE code from
-# pocker/wine (branch zwift-radios, based on evanjt/wine) overlaid, then installs them
-# into GE-Proton and patches its `proton` script so the driver can be enabled per game
-# with PROTON_ENABLE_WINEBTH=1 (GE-Proton disables winebth.sys by default).
+# Rebuilds wine's Bluetooth modules (winebth.sys, bluetoothapis, windows.devices.bluetooth,
+# windows.devices.radios, wintypes) and ntoskrnl.exe from the exact source of your GE-Proton
+# release: proton-ge-custom at that tag, with GE's own wine patches applied. The BLE code
+# comes from pocker/wine (branch zwift-radios, based on evanjt/wine), and ntoskrnl.exe gets
+# a fix for a crash of winedevice.exe when a Bluetooth device goes away. The results are
+# installed into GE-Proton, and its `proton` script is patched so the driver can be enabled
+# per game with PROTON_ENABLE_WINEBTH=1 (GE-Proton disables winebth.sys by default).
 #
 # Usage:
 #   patch-ge-proton-ble.sh [options] <GE-Proton dir>
 #
 # Options:
-#   --prefix DIR   Also update an existing wine prefix (repeatable). Proton copies builtin
-#                  DLLs into the prefix as real files, so an existing prefix keeps the old
-#                  ones until they are replaced. Also runs `wineboot -u` to register the
-#                  new WinRT classes.
+#   --prefix DIR   Also update an existing wine prefix (repeatable): link the new modules
+#                  into it and run `wineboot -u` to register the new WinRT classes.
 #   --workdir DIR  Where to fetch and build (default: ~/.cache/ge-proton-ble).
 #   --ble-repo URL Source of the BLE code (default: https://github.com/pocker/wine.git).
 #   --ble-ref REF  Branch or tag in --ble-repo (default: zwift-radios).
@@ -24,13 +24,16 @@
 # Then, for each game that needs Bluetooth, set PROTON_ENABLE_WINEBTH=1 in its
 # environment and pin the runner to this exact GE-Proton version.
 #
-# Only verified with GE-Proton11-7. Requirements: git, curl, python3, perl, autoconf, make,
-# gcc, flex, bison, mingw-w64 (x86_64 + i686), dbus development headers, BlueZ.
+# Only verified with GE-Proton11-7. Requirements: git, python3, perl, autoconf, make, gcc,
+# flex, bison, mingw-w64 (x86_64 + i686), dbus development headers, BlueZ.
 
 set -euo pipefail
 trap 'echo "error: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 WORKDIR="${HOME}/.cache/ge-proton-ble"
+GE_REPO="https://github.com/GloriousEggroll/proton-ge-custom.git"
+WINE_REPO="https://github.com/ValveSoftware/wine.git"
+STAGING_REPO="https://github.com/wine-staging/wine-staging.git"
 BLE_REPO="https://github.com/pocker/wine.git"
 BLE_REF="zwift-radios"
 PREFIXES=()
@@ -68,6 +71,7 @@ MODULES=(
     "windows.devices.bluetooth:windows.devices.bluetooth.dll"
     "windows.devices.radios:windows.devices.radios.dll"
     "wintypes:wintypes.dll"
+    "ntoskrnl.exe:ntoskrnl.exe"
 )
 INSTALLED_FILES=("x86_64-unix/winebth.so")
 for m in "${MODULES[@]}"; do
@@ -78,18 +82,26 @@ if [ "$RESTORE" = 1 ]; then
     [ -d "$BACKUP" ] || die "no backup found at $BACKUP"
     log "Restoring original files from $BACKUP"
     for f in "${INSTALLED_FILES[@]}"; do
-        rm -f "$LIBWINE/$f"
-        if [ -e "$BACKUP/$f.orig" ]; then cp -a "$BACKUP/$f.orig" "$LIBWINE/$f"; fi
+        if [ -e "$BACKUP/$f.orig" ]; then
+            rm -f "$LIBWINE/$f"
+            cp -a "$BACKUP/$f.orig" "$LIBWINE/$f"
+        elif [ -e "$BACKUP/$f.absent" ] || [ "${f#*/}" = "windows.devices.radios.dll" ]; then
+            # Not part of GE-Proton. Backups from older versions of this script have no marker.
+            rm -f "$LIBWINE/$f"
+        fi
     done
     if [ -e "$BACKUP/proton.orig" ]; then cp -a "$BACKUP/proton.orig" "$GE/proton"; fi
     rm -rf "$BACKUP"
-    log "Done. Prefixes updated with --prefix still hold the patched copies; recreate or re-run wineboot."
+    log "Done. Prefixes updated with --prefix now point at the original files again."
     exit 0
 fi
 
-REQUIRED_TOOLS=(git curl python3 perl autoreconf make gcc flex bison pkg-config x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc)
-PACMAN_PKGS=(git curl python perl autoconf make gcc flex bison pkgconf mingw-w64-gcc dbus)
-APT_PKGS=(git curl python3 perl autoconf make gcc flex bison pkg-config gcc-mingw-w64 libdbus-1-dev)
+REQUIRED_TOOLS=(git python3 perl autoreconf make gcc strip flex bison pkg-config
+                x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc
+                x86_64-w64-mingw32-strip i686-w64-mingw32-strip
+                x86_64-w64-mingw32-objdump i686-w64-mingw32-objdump)
+PACMAN_PKGS=(git python perl autoconf make gcc binutils flex bison pkgconf mingw-w64-gcc mingw-w64-binutils dbus)
+APT_PKGS=(git python3 perl autoconf make gcc binutils flex bison pkg-config gcc-mingw-w64 binutils-mingw-w64 libdbus-1-dev)
 
 missing_deps() {
     local t
@@ -133,24 +145,58 @@ TAG="$(awk '{print $2}' "$GE/version")"
 log "GE-Proton version: $TAG"
 [ "$TAG" = "GE-Proton11-7" ] || echo "warning: only verified with GE-Proton11-7; continuing with $TAG" >&2
 
-log "Looking up the wine commit pinned by $TAG"
-WINE_SHA="$(curl -fsSL "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/contents/wine?ref=$TAG" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')" || die "could not find the wine submodule for $TAG"
-log "wine commit: $WINE_SHA"
-
-SRC="$WORKDIR/wine-$WINE_SHA"
+GESRC="$WORKDIR/proton-ge-custom-$TAG"
+SRC="$GESRC/wine"
+BUILD="$WORKDIR/build-$TAG"
 BLE="$WORKDIR/ble-src"
 mkdir -p "$WORKDIR"
 
-if [ ! -d "$SRC/.git" ]; then
-    log "Fetching ValveSoftware/wine @ $WINE_SHA"
-    git init -q "$SRC"
-    git -C "$SRC" fetch -q --depth 1 https://github.com/ValveSoftware/wine.git "$WINE_SHA"
-    git -C "$SRC" checkout -q FETCH_HEAD
-else
-    log "Resetting $SRC"
-    git -C "$SRC" reset -q --hard
-    git -C "$SRC" clean -qfdx -e build
+# GE-Proton builds wine from ValveSoftware/wine plus the patches in its own repo, so start
+# from the same place. Anything built from plain Valve wine would drop GE's changes.
+if [ ! -d "$GESRC/.git" ]; then
+    log "Fetching proton-ge-custom @ $TAG"
+    git init -q "$GESRC"
+    git -C "$GESRC" fetch -q --depth 1 "$GE_REPO" "refs/tags/$TAG"
+    git -C "$GESRC" -c advice.detachedHead=false checkout -q FETCH_HEAD
+fi
+WINE_SHA="$(git -C "$GESRC" ls-tree HEAD wine | awk '{print $3}')"
+STAGING_SHA="$(git -C "$GESRC" ls-tree HEAD wine-staging | awk '{print $3}')"
+[ -n "$WINE_SHA" ] && [ -n "$STAGING_SHA" ] || die "could not find the wine submodules of $TAG"
+log "wine commit: $WINE_SHA, wine-staging commit: $STAGING_SHA"
+
+fetch_commit() { # dir url sha
+    if [ "$(git -C "$1" rev-parse -q --verify HEAD 2>/dev/null)" != "$3" ]; then
+        rm -rf "$1"
+        git init -q "$1"
+        git -C "$1" fetch -q --depth 1 "$2" "$3"
+        git -C "$1" checkout -q FETCH_HEAD
+    fi
+}
+log "Fetching wine and wine-staging sources"
+fetch_commit "$SRC" "$WINE_REPO" "$WINE_SHA"
+fetch_commit "$GESRC/wine-staging" "$STAGING_REPO" "$STAGING_SHA"
+
+PREP="$GESRC/patches/protonprep-valve-staging.sh"
+[ -f "$PREP" ] || die "$TAG has no patches/protonprep-valve-staging.sh"
+# GE reverts some upstream commits; a shallow clone needs them and their parents.
+for c in $(grep -o -E 'git revert --no-commit [0-9a-f]{40}' "$PREP" | awk '{print $4}'); do
+    git -C "$SRC" cat-file -e "$c^" 2>/dev/null || git -C "$SRC" fetch -q --depth 2 "$WINE_REPO" "$c"
+done
+
+# Run GE's wine patching exactly as its build does: the helper functions at the top and the
+# "WINE PATCHING" section (which starts by resetting the tree). Build files are generated
+# below instead of by its autoreconf/make_requests lines.
+log "Applying GE-Proton's wine patches"
+FUNCS_END="$(grep -n '^### (1) PREP SECTION ###' "$PREP" | cut -d: -f1)"
+WINE_START="$(grep -n '^### (2) WINE PATCHING ###' "$PREP" | cut -d: -f1)"
+[ -n "$FUNCS_END" ] && [ -n "$WINE_START" ] || die "unexpected layout of $PREP"
+{
+    head -n "$((FUNCS_END - 1))" "$PREP"
+    tail -n "+$WINE_START" "$PREP" | grep -v -E '^[[:space:]]*(autoreconf -f|\./tools/make_requests)[[:space:]]*$'
+} >"$WORKDIR/prep-wine-$TAG.sh"
+(cd "$GESRC" && bash "$WORKDIR/prep-wine-$TAG.sh") >"$WORKDIR/prep-$TAG.log" 2>&1 || true
+if grep -q -E "FAILED|can't find file to patch|malformed patch|Reversed \(or previously applied\)|^fatal:|^error:" "$WORKDIR/prep-$TAG.log"; then
+    die "some of GE-Proton's patches did not apply, see $WORKDIR/prep-$TAG.log"
 fi
 
 log "Fetching BLE sources from $BLE_REPO ($BLE_REF)"
@@ -171,39 +217,121 @@ if ! grep -q 'WINE_CONFIG_MAKEFILE(dlls/windows.devices.radios)' "$SRC/configure
     grep -q 'WINE_CONFIG_MAKEFILE(dlls/windows.devices.radios)' "$SRC/configure.ac" || die "could not register windows.devices.radios in configure.ac"
 fi
 
+# pocker/wine commit 7e426d5. When a Bluetooth device disconnects, winebth invalidates its
+# relations once per GATT service that BlueZ drops, and then the device itself is removed.
+# Without this, a leftover queued update runs on the deleted device and winedevice.exe
+# crashes, taking the Bluetooth radio with it until the whole wine session is restarted.
+log "Applying the ntoskrnl.exe device removal fix"
+patch -d "$SRC" -p1 --forward --no-backup-if-mismatch -s <<'EOF' || die "the ntoskrnl.exe fix does not apply to $TAG"
+--- a/dlls/ntoskrnl.exe/pnp.c
++++ b/dlls/ntoskrnl.exe/pnp.c
+@@ -448,6 +448,24 @@ static void enumerate_new_device( DEVICE_OBJECT *device, HDEVINFO set, DEVICE_OB
+     start_device( device, set, &sp_device );
+ }
+
++/* Drop pending bus relation updates for a device that is going away. The queue holds bare
++ * pointers, so an update left behind would be handled after the driver deleted the device. */
++static void forget_invalidated_device( DEVICE_OBJECT *device )
++{
++    size_t i, j;
++
++    EnterCriticalSection( &invalidated_devices_cs );
++    for (i = j = 0; i < invalidated_devices_count; ++i)
++    {
++        if (invalidated_devices[i] != device)
++            invalidated_devices[j++] = invalidated_devices[i];
++    }
++    if (j != invalidated_devices_count)
++        TRACE( "Dropping %Iu pending relation updates for device %p.\n", invalidated_devices_count - j, device );
++    invalidated_devices_count = j;
++    LeaveCriticalSection( &invalidated_devices_cs );
++}
++
+ static void send_remove_device_irp( DEVICE_OBJECT *device, UCHAR code )
+ {
+     struct wine_device *wine_device = CONTAINING_RECORD(device, struct wine_device, device_obj);
+@@ -462,6 +480,11 @@ static void send_remove_device_irp( DEVICE_OBJECT *device, UCHAR code )
+     }
+
+     send_pnp_irp( device, code );
++
++    /* The driver may have deleted the device, and may have queued updates for it while removing it.
++     * Only the pointer value is compared from here on. */
++    if (code == IRP_MN_REMOVE_DEVICE)
++        forget_invalidated_device( device );
+ }
+
+ static void remove_device( DEVICE_OBJECT *device )
+EOF
+
 # Valve's tree omits files that upstream commits or Proton's build generates.
 log "Generating build files"
-(cd "$SRC" && python3 dlls/winevulkan/make_vulkan && ./tools/make_specfiles && ./tools/make_requests && autoreconf -f) >/dev/null
+(cd "$SRC" && python3 dlls/winevulkan/make_vulkan && ./tools/make_specfiles && ./tools/make_requests && autoreconf -f) \
+    >"$WORKDIR/generate-$TAG.log" 2>&1 || die "generating build files failed, see $WORKDIR/generate-$TAG.log"
 
 log "Configuring"
-mkdir -p "$SRC/build"
-(cd "$SRC/build" && ../configure --enable-archs=i386,x86_64 --disable-tests --without-vulkan >configure.log 2>&1) \
-    || die "configure failed, see $SRC/build/configure.log"
-grep -q "checking for -ldbus-1... libdbus" "$SRC/build/configure.log" || die "configure did not find libdbus-1"
+mkdir -p "$BUILD"
+(cd "$BUILD" && "$SRC/configure" --enable-archs=i386,x86_64 --disable-tests --without-vulkan >configure.log 2>&1) \
+    || die "configure failed, see $BUILD/configure.log"
+grep -q "checking for -ldbus-1... libdbus" "$BUILD/configure.log" || die "configure did not find libdbus-1"
 
 log "Building (a few minutes)"
 TARGETS=()
 for m in "${MODULES[@]}"; do TARGETS+=("dlls/${m%%:*}/all"); done
-make -C "$SRC/build" -j"$(nproc)" "${TARGETS[@]}" >"$SRC/build/make.log" 2>&1 || die "build failed, see $SRC/build/make.log"
+make -C "$BUILD" -j"$(nproc)" "${TARGETS[@]}" >"$BUILD/make.log" 2>&1 || die "build failed, see $BUILD/make.log"
 
 built_path() { # installed-relative path -> build output
     case "$1" in
-        x86_64-unix/winebth.so) echo "$SRC/build/dlls/winebth.sys/winebth.so" ;;
+        x86_64-unix/winebth.so) echo "$BUILD/dlls/winebth.sys/winebth.so" ;;
         *) local arch="${1%%/*}" file="${1#*/}" m
            for m in "${MODULES[@]}"; do
-               if [ "${m#*:}" = "$file" ]; then echo "$SRC/build/dlls/${m%%:*}/$arch/$file"; fi
+               if [ "${m#*:}" = "$file" ]; then echo "$BUILD/dlls/${m%%:*}/$arch/$file"; fi
            done ;;
     esac
 }
 
+tool_for() { # installed-relative path, tool name -> tool for that architecture
+    case "$1" in
+        x86_64-windows/*) echo "x86_64-w64-mingw32-$2" ;;
+        i386-windows/*) echo "i686-w64-mingw32-$2" ;;
+        *) echo "$2" ;;
+    esac
+}
+
+exports() { # objdump, PE file -> sorted export names
+    "$1" -p "$2" | awk '/^\[Ordinal\/Name Pointer\] Table/ { f = 1; next }
+                        f && /^[[:space:]]*\[/ { print $NF; next }
+                        f && /^[[:space:]]*$/ { exit }' | sort
+}
+
+# ntoskrnl.exe is the one module GE-Proton patches itself. If the rebuilt one lacks any export
+# of the shipped one, the source didn't match this release, and installing it would break
+# other games; stop before touching anything.
+for f in x86_64-windows/ntoskrnl.exe i386-windows/ntoskrnl.exe; do
+    shipped="$LIBWINE/$f"; [ -e "$BACKUP/$f.orig" ] && shipped="$BACKUP/$f.orig"
+    missing="$(comm -23 <(exports "$(tool_for "$f" objdump)" "$shipped") <(exports "$(tool_for "$f" objdump)" "$(built_path "$f")"))"
+    [ -z "$missing" ] || die "rebuilt $f lacks exports of the shipped one: $(echo $missing | head -c 200)"
+done
+
 log "Installing into $GE"
+[ -d "$BACKUP" ] && FIRST_RUN=0 || FIRST_RUN=1
 mkdir -p "$BACKUP/x86_64-windows" "$BACKUP/i386-windows" "$BACKUP/x86_64-unix"
 for f in "${INSTALLED_FILES[@]}"; do
     src="$(built_path "$f")"
     [ -f "$src" ] || die "missing build output for $f"
-    if [ -e "$LIBWINE/$f" ] && [ ! -e "$BACKUP/$f.orig" ]; then cp -a "$LIBWINE/$f" "$BACKUP/$f.orig"; fi
-    rm -f "$LIBWINE/$f"
-    cp "$src" "$LIBWINE/$f"
+    # Save what GE-Proton shipped, once. A file it didn't ship gets an .absent marker instead,
+    # so that a later run doesn't mistake our own build for the original. Older versions of
+    # this script installed windows.devices.radios.dll without leaving a marker.
+    if [ ! -e "$BACKUP/$f.orig" ] && [ ! -e "$BACKUP/$f.absent" ]; then
+        if [ "${f#*/}" = "windows.devices.radios.dll" ] && [ "$FIRST_RUN" = 0 ]; then touch "$BACKUP/$f.absent"
+        elif [ -e "$LIBWINE/$f" ]; then cp -a "$LIBWINE/$f" "$BACKUP/$f.orig"
+        else touch "$BACKUP/$f.absent"
+        fi
+    fi
+    # Write next to the target and rename, so running wine processes keep the old file.
+    "$(tool_for "$f" strip)" --strip-debug -o "$LIBWINE/$f.new" "$src"
+    chmod 755 "$LIBWINE/$f.new"
+    mv -f "$LIBWINE/$f.new" "$LIBWINE/$f"
 done
 
 log "Patching $GE/proton"
@@ -236,15 +364,19 @@ for pfx in "${PREFIXES[@]}"; do
     win="$pfx/drive_c/windows"
     [ -d "$win/system32" ] || { echo "warning: $pfx is not a wine prefix, skipping" >&2; continue; }
     log "Updating prefix $pfx"
-    mkdir -p "$win/system32/drivers"
-    rm -f "$win/system32/drivers/winebth.sys"
-    cp "$(built_path x86_64-windows/winebth.sys)" "$win/system32/drivers/winebth.sys"
-    for m in "${MODULES[@]}"; do
-        file="${m#*:}"; [ "$file" = "winebth.sys" ] && continue
-        rm -f "$win/system32/$file"; cp "$(built_path "x86_64-windows/$file")" "$win/system32/$file"
-        if [ -d "$win/syswow64" ]; then
-            rm -f "$win/syswow64/$file"; cp "$(built_path "i386-windows/$file")" "$win/syswow64/$file"
-        fi
+    # Link like Proton does for its own builtins, so a later run of this script updates the
+    # prefix too. Older versions of this script copied the files instead.
+    for f in "${INSTALLED_FILES[@]}"; do
+        case "$f" in
+            x86_64-windows/winebth.sys) dir="$win/system32/drivers" ;;
+            x86_64-windows/*) dir="$win/system32" ;;
+            i386-windows/winebth.sys) continue ;;
+            i386-windows/*) dir="$win/syswow64" ;;
+            *) continue ;;
+        esac
+        [ -d "$dir" ] || continue
+        rm -f "$dir/${f#*/}"
+        ln -s "$LIBWINE/$f" "$dir/${f#*/}"
     done
     if command -v umu-run >/dev/null; then
         log "Registering WinRT classes (wineboot -u) in $pfx"
